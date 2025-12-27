@@ -3,10 +3,10 @@ import os
 import json
 import base64
 import time
-import asyncio
-import aiohttp
 import requests
 from datetime import datetime
+from flask import Flask, jsonify
+import threading
 
 # ========== تنظیم مسیرها ==========
 current_dir = os.path.dirname(__file__)
@@ -27,16 +27,7 @@ except ImportError as e:
     def Encrypt_ID(data):
         return "0000000000000000"
 
-try:
-    from AccountPersonalShow_pb2 import AccountPersonalShowInfo
-    print("✅ AccountPersonalShow_pb2 imported")
-except ImportError as e:
-    print(f"⚠️ Failed to import protobuf: {e}")
-    AccountPersonalShowInfo = None
-
 # ========== ایجاد Flask App ==========
-from flask import Flask, jsonify
-
 app = Flask(__name__)
 
 # ========== تنظیمات ==========
@@ -112,27 +103,32 @@ def get_cached_tokens():
     
     return load_tokens_from_github()
 
-async def visit(session, token_info, uid, data):
+def send_single_visit(token_info, uid, encrypted_data):
+    """ارسال یک بازدید با requests (بدون async)"""
     url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
     headers = {
         "Authorization": f"Bearer {token_info['token']}",
         "User-Agent": "Dalvik/2.1.0",
         "Content-Type": "application/octet-stream",
         "ReleaseVersion": "OB51",
-        "X-GA": "v1 1"
+        "X-GA": "v1 1",
+        "Accept-Encoding": "gzip",
+        "Connection": "Keep-Alive"
     }
     
     try:
-        async with session.post(url, headers=headers, data=data, timeout=5, ssl=False) as resp:
-            return resp.status == 200
+        response = requests.post(url, headers=headers, data=encrypted_data, timeout=5, verify=False)
+        return response.status_code == 200
     except:
         return False
 
-async def send_visits_for_tokens(tokens, uid, visit_count):
+def send_visits_sync(tokens, uid, visit_count):
+    """ارسال بازدیدها به صورت sync"""
     success = 0
     fail = 0
     
     try:
+        # رمزگذاری UID
         encrypted = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
         data = bytes.fromhex(encrypted)
         print(f"🔐 Encrypted UID {uid}")
@@ -140,22 +136,23 @@ async def send_visits_for_tokens(tokens, uid, visit_count):
         print(f"❌ Encryption error: {e}")
         return {"success": 0, "fail": visit_count, "error": str(e)}
     
-    async with aiohttp.ClientSession() as session:
-        print(f"🚀 Sending {visit_count} visits...")
+    print(f"🚀 Sending {visit_count} visits (sync)...")
+    
+    for i in range(visit_count):
+        token = tokens[i % len(tokens)]
         
-        for i in range(visit_count):
-            token = tokens[i % len(tokens)]
-            
-            if await visit(session, token, uid, data):
-                success += 1
-            else:
-                fail += 1
-            
-            if i < visit_count - 1:
-                await asyncio.sleep(0.5)
-            
-            if (i + 1) % 20 == 0:
-                print(f"   Progress: {i+1}/{visit_count}")
+        if send_single_visit(token, uid, data):
+            success += 1
+        else:
+            fail += 1
+        
+        # تاخیر 0.5 ثانیه
+        if i < visit_count - 1:
+            time.sleep(0.5)
+        
+        # نمایش progress
+        if (i + 1) % 10 == 0:
+            print(f"   Progress: {i+1}/{visit_count}")
     
     return {"success": success, "fail": fail}
 
@@ -165,14 +162,15 @@ async def send_visits_for_tokens(tokens, uid, visit_count):
 def home():
     return jsonify({
         "service": "Free Fire Visit API",
-        "version": "2.0",
+        "version": "2.0 (Sync)",
         "endpoints": [
             "/<server>/<uid>/<count>",
             "/health",
             "/stats",
             "/test/<index>",
             "/refresh"
-        ]
+        ],
+        "example": "/IND/4285785816/10"
     })
 
 @app.route('/health')
@@ -197,7 +195,8 @@ def stats():
     
     return jsonify({
         "total_tokens": len(tokens),
-        "regions": region_counts
+        "regions": region_counts,
+        "cache_age": int(time.time() - TOKEN_CACHE["timestamp"])
     })
 
 @app.route('/refresh')
@@ -212,7 +211,7 @@ def refresh_tokens():
 def test_token(index):
     tokens = get_cached_tokens()
     if not tokens or index < 1 or index > len(tokens):
-        return jsonify({"error": "Invalid"}), 400
+        return jsonify({"error": "Invalid index"}), 400
     
     token = tokens[index-1]
     return jsonify({
@@ -227,30 +226,34 @@ def send_visits(server, uid, count):
     
     tokens = get_cached_tokens()
     if not tokens:
-        return jsonify({"error": "No tokens"}), 500
+        return jsonify({"error": "No tokens available"}), 500
     
-    if count <= 0 or count > 500:
-        return jsonify({"error": "Invalid count"}), 400
+    if count <= 0 or count > 100:  # محدودیت کمتر
+        return jsonify({"error": "Count must be 1-100"}), 400
     
     try:
         start = time.time()
-        result = asyncio.run(send_visits_for_tokens(tokens, uid, count))
+        result = send_visits_sync(tokens, uid, count)
         end = time.time()
+        
+        success_rate = round((result["success"] / count * 100), 2) if count > 0 else 0
         
         response = {
             "status": "completed",
+            "server": server.upper(),
             "target": uid,
             "requested": count,
             "successful": result["success"],
             "failed": result["fail"],
-            "success_rate": round((result["success"] / count * 100), 2) if count > 0 else 0,
-            "time": round(end - start, 2)
+            "success_rate": success_rate,
+            "execution_time": round(end - start, 2),
+            "timestamp": int(time.time())
         }
         
         if "error" in result:
             response["warning"] = result["error"]
         
-        print(f"📊 Results: {result['success']}/{count} successful")
+        print(f"📊 Results: {result['success']}/{count} successful ({success_rate}%)")
         
         return jsonify(response)
         
@@ -263,12 +266,10 @@ def single_visit(server, uid):
     return send_visits(server, uid, 1)
 
 # ========== VERCEL HANDLER ==========
-# این تابع الزامی برای Vercel است
 def handler(request, context):
     """Vercel serverless handler"""
     from flask import request as flask_request
     
-    # ارسال درخواست به Flask app
     with app.request_context(flask_request.environ):
         try:
             response = app.full_dispatch_request()
@@ -285,7 +286,11 @@ def handler(request, context):
 
 # ========== اجرای محلی ==========
 if __name__ == "__main__":
-    print("🔥 Free Fire API (Local)")
+    print("🔥 Free Fire API (Sync Version)")
     print("📡 Tokens from GitHub")
     print("🌐 http://localhost:8080")
+    
+    # بارگذاری اولیه توکن‌ها
+    load_tokens_from_github()
+    
     app.run(host="0.0.0.0", port=8080, debug=False)
