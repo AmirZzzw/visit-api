@@ -1,12 +1,5 @@
 import sys
 import os
-import json
-import base64
-import time
-import requests
-from datetime import datetime
-from flask import Flask, jsonify
-import threading
 
 # ========== تنظیم مسیرها ==========
 current_dir = os.path.dirname(__file__)
@@ -26,6 +19,14 @@ except ImportError as e:
         return "00000000000000000000000000000000"
     def Encrypt_ID(data):
         return "0000000000000000"
+
+# ========== بقیه importها بعد از تنظیم مسیرها ==========
+import json
+import base64
+import time
+import requests
+from datetime import datetime
+from flask import Flask, jsonify, request as flask_request
 
 # ========== ایجاد Flask App ==========
 app = Flask(__name__)
@@ -104,7 +105,7 @@ def get_cached_tokens():
     return load_tokens_from_github()
 
 def send_single_visit(token_info, uid, encrypted_data):
-    """ارسال یک بازدید با requests (بدون async)"""
+    """ارسال یک بازدید"""
     url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
     headers = {
         "Authorization": f"Bearer {token_info['token']}",
@@ -123,12 +124,11 @@ def send_single_visit(token_info, uid, encrypted_data):
         return False
 
 def send_visits_sync(tokens, uid, visit_count):
-    """ارسال بازدیدها به صورت sync"""
+    """ارسال بازدیدها"""
     success = 0
     fail = 0
     
     try:
-        # رمزگذاری UID
         encrypted = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
         data = bytes.fromhex(encrypted)
         print(f"🔐 Encrypted UID {uid}")
@@ -136,7 +136,7 @@ def send_visits_sync(tokens, uid, visit_count):
         print(f"❌ Encryption error: {e}")
         return {"success": 0, "fail": visit_count, "error": str(e)}
     
-    print(f"🚀 Sending {visit_count} visits (sync)...")
+    print(f"🚀 Sending {visit_count} visits...")
     
     for i in range(visit_count):
         token = tokens[i % len(tokens)]
@@ -146,11 +146,9 @@ def send_visits_sync(tokens, uid, visit_count):
         else:
             fail += 1
         
-        # تاخیر 0.5 ثانیه
         if i < visit_count - 1:
             time.sleep(0.5)
         
-        # نمایش progress
         if (i + 1) % 10 == 0:
             print(f"   Progress: {i+1}/{visit_count}")
     
@@ -162,7 +160,7 @@ def send_visits_sync(tokens, uid, visit_count):
 def home():
     return jsonify({
         "service": "Free Fire Visit API",
-        "version": "2.0 (Sync)",
+        "version": "2.0",
         "endpoints": [
             "/<server>/<uid>/<count>",
             "/health",
@@ -195,8 +193,7 @@ def stats():
     
     return jsonify({
         "total_tokens": len(tokens),
-        "regions": region_counts,
-        "cache_age": int(time.time() - TOKEN_CACHE["timestamp"])
+        "regions": region_counts
     })
 
 @app.route('/refresh')
@@ -228,7 +225,7 @@ def send_visits(server, uid, count):
     if not tokens:
         return jsonify({"error": "No tokens available"}), 500
     
-    if count <= 0 or count > 100:  # محدودیت کمتر
+    if count <= 0 or count > 100:
         return jsonify({"error": "Count must be 1-100"}), 400
     
     try:
@@ -253,7 +250,7 @@ def send_visits(server, uid, count):
         if "error" in result:
             response["warning"] = result["error"]
         
-        print(f"📊 Results: {result['success']}/{count} successful ({success_rate}%)")
+        print(f"📊 Results: {result['success']}/{count} successful")
         
         return jsonify(response)
         
@@ -265,32 +262,36 @@ def send_visits(server, uid, count):
 def single_visit(server, uid):
     return send_visits(server, uid, 1)
 
-# ========== VERCEL HANDLER ==========
-def handler(request, context):
-    """Vercel serverless handler"""
-    from flask import request as flask_request
+# ========== برای Vercel ==========
+# Vercel به این شکل نیاز داره
+def handler(request, *args):
+    """Vercel serverless handler - روش ساده"""
+    path = request['path']
+    method = request['method']
     
-    with app.request_context(flask_request.environ):
-        try:
-            response = app.full_dispatch_request()
-            return {
-                'statusCode': response.status_code,
-                'headers': dict(response.headers),
-                'body': response.get_data(as_text=True)
-            }
-        except Exception as e:
-            return {
-                'statusCode': 500,
-                'body': json.dumps({'error': str(e)})
-            }
+    # شبیه‌سازی درخواست Flask
+    with app.test_request_context(path=path, method=method):
+        response = app.full_dispatch_request()
+        
+        return {
+            'statusCode': response.status_code,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            'body': response.get_data(as_text=True)
+        }
 
-# ========== اجرای محلی ==========
+# یا از این روش ساده‌تر استفاده کن:
 if __name__ == "__main__":
-    print("🔥 Free Fire API (Sync Version)")
+    # فقط برای اجرای محلی
+    print("🔥 Free Fire API (Local)")
     print("📡 Tokens from GitHub")
     print("🌐 http://localhost:8080")
     
-    # بارگذاری اولیه توکن‌ها
     load_tokens_from_github()
-    
     app.run(host="0.0.0.0", port=8080, debug=False)
+else:
+    # روی Vercel
+    print("🚀 Starting on Vercel...")
+    load_tokens_from_github()
