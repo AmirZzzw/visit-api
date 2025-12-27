@@ -14,21 +14,22 @@ try:
     from byte import encrypt_api, Encrypt_ID
     print("✅ byte.py imported")
 except ImportError as e:
-    print(f"❌ Failed to import byte: {e}")
+    print(f"⚠️ byte.py import failed: {e}")
     def encrypt_api(data):
         return "00000000000000000000000000000000"
     def Encrypt_ID(data):
         return "0000000000000000"
 
-# ========== بقیه importها بعد از تنظیم مسیرها ==========
+# ========== بقیه importها ==========
 import json
 import base64
 import time
 import requests
 from datetime import datetime
-from flask import Flask, jsonify, request as flask_request
 
-# ========== ایجاد Flask App ==========
+# ========== Flask App ==========
+from flask import Flask, jsonify, request
+
 app = Flask(__name__)
 
 # ========== تنظیمات ==========
@@ -105,16 +106,13 @@ def get_cached_tokens():
     return load_tokens_from_github()
 
 def send_single_visit(token_info, uid, encrypted_data):
-    """ارسال یک بازدید"""
     url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
     headers = {
         "Authorization": f"Bearer {token_info['token']}",
         "User-Agent": "Dalvik/2.1.0",
         "Content-Type": "application/octet-stream",
         "ReleaseVersion": "OB51",
-        "X-GA": "v1 1",
-        "Accept-Encoding": "gzip",
-        "Connection": "Keep-Alive"
+        "X-GA": "v1 1"
     }
     
     try:
@@ -124,7 +122,6 @@ def send_single_visit(token_info, uid, encrypted_data):
         return False
 
 def send_visits_sync(tokens, uid, visit_count):
-    """ارسال بازدیدها"""
     success = 0
     fail = 0
     
@@ -167,8 +164,7 @@ def home():
             "/stats",
             "/test/<index>",
             "/refresh"
-        ],
-        "example": "/IND/4285785816/10"
+        ]
     })
 
 @app.route('/health')
@@ -262,36 +258,15 @@ def send_visits(server, uid, count):
 def single_visit(server, uid):
     return send_visits(server, uid, 1)
 
-# ========== برای Vercel ==========
-# Vercel به این شکل نیاز داره
-def handler(request, *args):
-    """Vercel serverless handler - روش ساده"""
-    path = request['path']
-    method = request['method']
-    
-    # شبیه‌سازی درخواست Flask
-    with app.test_request_context(path=path, method=method):
-        response = app.full_dispatch_request()
-        
-        return {
-            'statusCode': response.status_code,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': response.get_data(as_text=True)
-        }
+# ========== VERCEL HANDLER ==========
+# مهم: فقط app رو export کن
+# Vercel خودش handler رو مدیریت می‌کنه
 
-# یا از این روش ساده‌تر استفاده کن:
+# ========== اجرای محلی ==========
 if __name__ == "__main__":
-    # فقط برای اجرای محلی
     print("🔥 Free Fire API (Local)")
     print("📡 Tokens from GitHub")
     print("🌐 http://localhost:8080")
     
     load_tokens_from_github()
     app.run(host="0.0.0.0", port=8080, debug=False)
-else:
-    # روی Vercel
-    print("🚀 Starting on Vercel...")
-    load_tokens_from_github()
