@@ -98,13 +98,18 @@ def process_large_batch(job_id, server, uid, total_count):
     if not tokens:
         PROGRESS_STORE[job_id] = {
             "status": "failed",
-            "error": "No tokens available"
+            "error": "No tokens available",
+            "created_at": datetime.now().isoformat()
         }
         return
     
+    # بروزرسانی وضعیت به "processing"
+    PROGRESS_STORE[job_id]["status"] = "processing"
+    PROGRESS_STORE[job_id]["started_at"] = datetime.now().isoformat()
+    PROGRESS_STORE[job_id]["last_update"] = datetime.now().isoformat()
+    
     # تنظیم progress اولیه
-    PROGRESS_STORE[job_id] = {
-        "status": "processing",
+    PROGRESS_STORE[job_id].update({
         "server": server.upper(),
         "target": uid,
         "total": total_count,
@@ -113,9 +118,7 @@ def process_large_batch(job_id, server, uid, total_count):
         "fail": 0,
         "current_chunk": 0,
         "total_chunks": (total_count + 4) // 5,  # chunkهای 5 تایی
-        "started_at": datetime.now().isoformat(),
-        "last_update": datetime.now().isoformat()
-    }
+    })
     
     # پردازش chunkهای 5 تایی
     CHUNK_SIZE = 5
@@ -155,7 +158,8 @@ def process_large_batch(job_id, server, uid, total_count):
         "started_at": PROGRESS_STORE[job_id]["started_at"],
         "completed_at": datetime.now().isoformat(),
         "chunk_size": CHUNK_SIZE,
-        "total_chunks": PROGRESS_STORE[job_id]["total_chunks"]
+        "total_chunks": PROGRESS_STORE[job_id]["total_chunks"],
+        "job_id": job_id
     }
     
     print(f"✅ Job {job_id} completed")
@@ -172,7 +176,9 @@ def home():
             "progress": "POST /progress/<server>/<uid>/<count> (1-1000+)",
             "status": "GET /status/<job_id>",
             "quick": "GET /<server>/<uid>/<count> (1-8)",
-            "health": "GET /health"
+            "health": "GET /health",
+            "cleanup": "GET /cleanup",
+            "jobs": "GET /jobs"
         }
     })
 
@@ -184,6 +190,8 @@ def health():
         "tokens": len(tokens),
         "active_jobs": len(ACTIVE_JOBS),
         "completed_jobs": len([j for j in PROGRESS_STORE.values() if j.get("status") == "completed"]),
+        "queued_jobs": len([j for j in PROGRESS_STORE.values() if j.get("status") == "queued"]),
+        "processing_jobs": len([j for j in PROGRESS_STORE.values() if j.get("status") == "processing"]),
         "chunk_size": 5,
         "max_per_request": 1000
     })
@@ -264,8 +272,11 @@ def progress_visits(server, uid, count):
         "server": server.upper(),
         "target": uid,
         "total": count,
+        "job_id": job_id,
         "created_at": datetime.now().isoformat()
     }
+    
+    ACTIVE_JOBS.add(job_id)
     
     # شروع پردازش در background thread
     try:
@@ -275,13 +286,13 @@ def progress_visits(server, uid, count):
             daemon=True
         )
         thread.start()
-        ACTIVE_JOBS.add(job_id)
         
         return jsonify({
             "job_id": job_id,
             "status": "started",
             "message": f"Processing {count} visits in chunks of 5",
             "check_progress": f"https://visit-api-pi.vercel.app/status/{job_id}",
+            "check_progress_local": f"/status/{job_id}",
             "total_chunks": (count + 4) // 5,
             "estimated_time": f"{(count * 0.35):.1f} seconds",
             "created_at": datetime.now().isoformat(),
@@ -289,6 +300,8 @@ def progress_visits(server, uid, count):
         })
         
     except Exception as e:
+        PROGRESS_STORE[job_id]["status"] = "failed"
+        PROGRESS_STORE[job_id]["error"] = str(e)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/status/<job_id>')
@@ -316,7 +329,8 @@ def get_job_status(job_id):
             "total_chunks": job_data.get("total_chunks", 0),
             "started_at": job_data.get("started_at"),
             "last_update": job_data.get("last_update"),
-            "estimated_remaining_chunks": job_data.get("total_chunks", 0) - job_data.get("current_chunk", 0)
+            "estimated_remaining_chunks": job_data.get("total_chunks", 0) - job_data.get("current_chunk", 0),
+            "estimated_remaining_time": f"{(job_data.get('total_chunks', 0) - job_data.get('current_chunk', 0)) * 0.35:.1f} seconds"
         })
     
     elif job_data.get("status") == "queued":
@@ -324,11 +338,17 @@ def get_job_status(job_id):
             "job_id": job_id,
             "status": "queued",
             "message": "Job is in queue, will start soon",
-            "created_at": job_data.get("created_at")
+            "created_at": job_data.get("created_at"),
+            "position_in_queue": len([j for j in PROGRESS_STORE.values() if j.get("status") == "queued"])
         })
     
     # اگر completed یا failed
-    return jsonify(job_data)
+    response = dict(job_data)
+    if job_data.get("status") == "completed":
+        response["success_rate"] = f"{response.get('success_rate', 0)}%"
+        response["estimated_time_used"] = f"{(response.get('total', 0) * 0.35):.1f} seconds"
+    
+    return jsonify(response)
 
 @app.route('/jobs')
 def list_all_jobs():
@@ -341,12 +361,15 @@ def list_all_jobs():
             "target": job_data.get("target"),
             "total": job_data.get("total"),
             "progress": f"{job_data.get('completed', 0)}/{job_data.get('total', 0)}" if job_data.get("status") == "processing" else "N/A",
-            "created_at": job_data.get("created_at", job_data.get("started_at"))
+            "created_at": job_data.get("created_at", job_data.get("started_at")),
+            "last_update": job_data.get("last_update", "N/A")
         })
+    
+    jobs_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     
     return jsonify({
         "total_jobs": len(PROGRESS_STORE),
-        "jobs": jobs_list[-20:]  # آخرین 20 تا
+        "jobs": jobs_list[:20]  # آخرین 20 تا
     })
 
 # ========== Cleanup ==========
@@ -369,13 +392,17 @@ def cleanup_old_jobs():
             except:
                 pass
     
+    cleaned_count = 0
     for job_id in old_jobs:
-        del PROGRESS_STORE[job_id]
-        ACTIVE_JOBS.discard(job_id)
+        if job_id in PROGRESS_STORE:
+            del PROGRESS_STORE[job_id]
+            ACTIVE_JOBS.discard(job_id)
+            cleaned_count += 1
     
     return jsonify({
-        "cleaned": len(old_jobs),
-        "remaining": len(PROGRESS_STORE)
+        "cleaned": cleaned_count,
+        "remaining": len(PROGRESS_STORE),
+        "active_jobs": len(ACTIVE_JOBS)
     })
 
 if __name__ == "__main__":
