@@ -101,7 +101,7 @@ def send_visits(server, uid, count):
         # پس delay واقعی ≈ 1s
         
         # delay هوشمند
-        base_delay = 0.8  # کاهش از 1.14 به 0.8
+        base_delay = 0.4  # کاهش از 1.14 به 0.8
         max_visits_before_timeout = int(9 / base_delay)  # حدود 11 تا
         
         print(f"📊 Strategy: delay={base_delay}s, max={max_visits_before_timeout}")
@@ -262,3 +262,4 @@ if __name__ == "__main__":
     print("⚡ Parallel processing option")
     print("🌐 http://localhost:8080")
     app.run(host="0.0.0.0", port=8080)
+
